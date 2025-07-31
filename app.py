@@ -88,6 +88,15 @@ def run_email_search(query, max_urls):
         script_path = Path(__file__).parent / "email_finder.py"
         cmd = [sys.executable, str(script_path)]
         
+        # Set environment variables for encoding protection
+        env = os.environ.copy()
+        env.update({
+            'PYTHONIOENCODING': 'utf-8:replace',
+            'PYTHONUTF8': '1',
+            'PYTHONLEGACYWINDOWSSTDIO': '0',
+            'PYTHONLEGACYWINDOWSIOENCODING': '0'
+        })
+        
         process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -96,7 +105,10 @@ def run_email_search(query, max_urls):
             text=True,
             bufsize=1,
             universal_newlines=True,
-            cwd=Path(__file__).parent  # Set working directory
+            cwd=Path(__file__).parent,  # Set working directory
+            env=env,  # Use our encoding-protected environment
+            encoding='utf-8',
+            errors='replace'
         )
         
         # Enviar inputs

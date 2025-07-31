@@ -10,38 +10,97 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email_template import get_email_template
 
-# Windows Unicode fix - Set UTF-8 encoding for stdout
+# Windows Unicode fix - Set UTF-8 encoding for stdout and environment
 if sys.platform.startswith('win'):
     import codecs
-    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
+    import io
+    import locale
+    
+    # Set environment variables for UTF-8 encoding
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    os.environ['PYTHONUTF8'] = '1'
+    
+    # Try to set console code page to UTF-8
+    try:
+        import subprocess
+        subprocess.run(['chcp', '65001'], shell=True, capture_output=True)
+    except:
+        pass
+    
+    # Fix for Windows encoding issues with stdout
+    try:
+        # Check if stdout needs to be wrapped
+        if hasattr(sys.stdout, 'buffer'):
+            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
+        elif not hasattr(sys.stdout, 'encoding') or sys.stdout.encoding.lower() != 'utf-8':
+            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach(), errors='replace')
+    except Exception:
+        # Fallback if stdout is already wrapped or other issues
+        pass
+    
+    # Also handle stderr
+    try:
+        if hasattr(sys.stderr, 'buffer'):
+            sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, errors='replace')
+        elif not hasattr(sys.stderr, 'encoding') or sys.stderr.encoding.lower() != 'utf-8':
+            sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach(), errors='replace')
+    except Exception:
+        pass
 
 def safe_print(text, flush=False):
     """Safe print function that handles Unicode on Windows"""
     try:
+        # First try normal print
         print(text, flush=flush)
-    except UnicodeEncodeError:
-        # Fallback: replace emojis with simple text
-        safe_text = text.encode('ascii', 'replace').decode('ascii')
-        # Replace common emojis with text equivalents
-        replacements = {
-            '📧': '[EMAIL]',
-            '📁': '[FILE]',
-            '🔍': '[SEARCH]',
-            '✅': '[OK]',
-            '⏭️': '[SKIP]',
-            '❌': '[ERROR]',
-            '📊': '[STATS]',
-            '📈': '[STATS]',
-            '🎉': '[DONE]',
-            '⏳': '[WAIT]',
-            '💾': '[SAVE]',
-            '🧹': '[CLEAN]',
-            '🔄': '[RESTORE]',
-            '⚠️': '[WARNING]'
-        }
-        for emoji, replacement in replacements.items():
-            safe_text = safe_text.replace('?', replacement, 1) if '?' in safe_text else safe_text
-        print(safe_text, flush=flush)
+    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+        try:
+            # Try encoding as UTF-8 with error handling
+            if isinstance(text, bytes):
+                text = text.decode('utf-8', errors='replace')
+            safe_text = str(text).encode('utf-8', errors='replace').decode('utf-8')
+            print(safe_text, flush=flush)
+        except Exception:
+            # Final fallback: replace problematic characters with safe alternatives
+            try:
+                # Replace common emojis and special characters
+                safe_text = str(text)
+                replacements = {
+                    '📧': '[EMAIL]',
+                    '📁': '[FILE]',
+                    '🔍': '[SEARCH]',
+                    '✅': '[OK]',
+                    '⏭️': '[SKIP]',
+                    '❌': '[ERROR]',
+                    '📊': '[STATS]',
+                    '📈': '[STATS]',
+                    '🎉': '[DONE]',
+                    '⏳': '[WAIT]',
+                    '💾': '[SAVE]',
+                    '🧹': '[CLEAN]',
+                    '🔄': '[RESTORE]',
+                    '⚠️': '[WARNING]',
+                    '🚀': '[START]',
+                    '💡': '[INFO]',
+                    '🌐': '[WEB]',
+                    '📍': '[LOCATION]',
+                    '🔧': '[TOOL]',
+                    '👋': '[WAVE]'
+                }
+                for emoji, replacement in replacements.items():
+                    safe_text = safe_text.replace(emoji, replacement)
+                
+                # Remove any remaining non-ASCII characters
+                safe_text = safe_text.encode('ascii', 'replace').decode('ascii')
+                print(safe_text, flush=flush)
+            except Exception:
+                # Ultimate fallback
+                print("[MESSAGE ENCODING ERROR]", flush=flush)
+    except Exception as e:
+        # Handle any other printing errors
+        try:
+            print(f"[PRINT ERROR: {e}]", flush=flush)
+        except:
+            pass
 
 # Configurações do email - Use environment variables or config file
 try:
@@ -74,11 +133,26 @@ def remove_sent_emails_from_csv(csv_file, sent_emails_list):
         return
     
     try:
-        # Read the original CSV
-        with open(csv_file, 'r', encoding='utf-8') as file:
-            reader = csv.DictReader(file)
-            all_rows = list(reader)
-            fieldnames = reader.fieldnames
+        # Read the original CSV with encoding fallback
+        all_rows = None
+        fieldnames = None
+        
+        # Try multiple encodings
+        encodings_to_try = ['utf-8', 'utf-8-sig', 'cp1252', 'iso-8859-1', 'latin1']
+        
+        for encoding in encodings_to_try:
+            try:
+                with open(csv_file, 'r', encoding=encoding) as file:
+                    reader = csv.DictReader(file)
+                    all_rows = list(reader)
+                    fieldnames = reader.fieldnames
+                    break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        
+        if all_rows is None:
+            safe_print(f"❌ Erro: Não foi possível ler o arquivo CSV com nenhuma codificação")
+            return None
         
         # Filter out sent emails
         remaining_rows = []
@@ -213,10 +287,23 @@ def send_emails_from_csv(csv_file, language='pt', update_csv_on_completion=False
     total_emails = 0
     
     try:
-        with open(csv_file, 'r', encoding='utf-8') as file:
-            reader = csv.DictReader(file)
-            emails = list(reader)
-            total_emails = len(emails)
+        # Read CSV with encoding fallback
+        emails = None
+        encodings_to_try = ['utf-8', 'utf-8-sig', 'cp1252', 'iso-8859-1', 'latin1']
+        
+        for encoding in encodings_to_try:
+            try:
+                with open(csv_file, 'r', encoding=encoding) as file:
+                    reader = csv.DictReader(file)
+                    emails = list(reader)
+                    total_emails = len(emails)
+                    break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        
+        if emails is None:
+            safe_print(f"❌ Erro: Não foi possível ler o arquivo CSV com nenhuma codificação")
+            return
             
         if total_emails == 0:
             safe_print("❌ Nenhum email encontrado no arquivo!")
@@ -349,11 +436,24 @@ def clean_csv_file(csv_file):
     try:
         safe_print(f"🧹 Limpando arquivo: {csv_file}")
         
-        # Read the original CSV
-        with open(csv_file, 'r', encoding='utf-8') as file:
-            reader = csv.DictReader(file)
-            all_rows = list(reader)
-            fieldnames = reader.fieldnames
+        # Read the original CSV with encoding fallback
+        all_rows = None
+        fieldnames = None
+        encodings_to_try = ['utf-8', 'utf-8-sig', 'cp1252', 'iso-8859-1', 'latin1']
+        
+        for encoding in encodings_to_try:
+            try:
+                with open(csv_file, 'r', encoding=encoding) as file:
+                    reader = csv.DictReader(file)
+                    all_rows = list(reader)
+                    fieldnames = reader.fieldnames
+                    break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        
+        if all_rows is None:
+            safe_print(f"❌ Erro: Não foi possível ler o arquivo CSV com nenhuma codificação")
+            return {'removed_count': 0, 'remaining_count': 0}
         
         if not all_rows:
             safe_print("📝 Arquivo CSV está vazio")
